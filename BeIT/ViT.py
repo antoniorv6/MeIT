@@ -189,6 +189,4 @@ class ViTModel(nn.Module):
         return x
 
 
-#model = ViTModel(max_img_size=(224, 224), num_channels=3, 
-#                          d_model=768, patch_size=(16,16), 
-#                          use_masking=True, attention_heads=12, dim_ff=3072, num_enc_layers=12)
+    

@@ -1,11 +1,15 @@
 import torch
 import wandb
 import lightning.pytorch as L
+import torch.nn as nn
 
 from math import sqrt, exp
 from torchinfo import summary
 from torchvision.utils import make_grid
 from dalle_pytorch import DiscreteVAE
+
+from BeIT.ViT import ViTModel
+from transformers import get_linear_schedule_with_warmup
 
 class DVAE(L.LightningModule):
     def __init__(self, vocab_size=8192) -> None:
@@ -56,10 +60,52 @@ class DVAE(L.LightningModule):
         
         return loss
 
+class MeIT(L.LightningModule):
+    def __init__(self, max_image_size, vocab_size=8192, num_channels=3, d_model=768, attention_heads=12, dim_ff=3072, num_layers=12, patch_size=(16,16)) -> None:
+        super().__init__()
+        self.model = ViTModel(max_img_size=max_image_size, 
+                 num_channels=num_channels, 
+                 d_model=d_model, 
+                 patch_size=patch_size, 
+                 use_masking=True, attention_heads=attention_heads, 
+                 dim_ff=dim_ff, num_enc_layers=num_layers)
+        
+        self.outLayer = nn.Linear(in_features=768, out_features=8192)
+    
+    def forward(self, x, patch_mask=None):
+        return self.outLayer(self.model(x, patch_mask))
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(),
+            lr=1e-3,
+            betas=(0.9, 0.999),
+            weight_decay=0.05)
+        
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=10000,
+            num_training_steps=250000
+        )
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step',  # Step-wise LR scheduling
+            }
+        }
+
+
 def get_DVAE_model(maxheight, maxwidth, in_channels=3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = DVAE().to(device)
     summary(model, input_size=[(1,in_channels,maxheight,maxwidth)], dtypes=[torch.float])
+    return model
+
+def get_MeIT_model(maxheight, maxwidth, in_channels=3):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = MeIT(max_image_size=(maxheight, maxwidth)).to(device)
+    summary(model, input_size=[(1, in_channels,maxheight,maxwidth)], dtypes=[torch.float])
     return model
     
 
