@@ -111,7 +111,7 @@ class DeepScoresMasking(Dataset):
         return img, gt, bool_masked_pos 
 
     def get_max_hw(self):
-        m_width = 1080
-        m_height = 1920
+        m_width = 3508
+        m_height = 2480
 
         return m_height, m_width

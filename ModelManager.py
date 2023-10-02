@@ -1,3 +1,5 @@
+from typing import Any
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torch
 import wandb
 import lightning.pytorch as L
@@ -70,7 +72,8 @@ class MeIT(L.LightningModule):
                  use_masking=True, attention_heads=attention_heads, 
                  dim_ff=dim_ff, num_enc_layers=num_layers)
         
-        self.outLayer = nn.Linear(in_features=768, out_features=8192)
+        self.outLayer = nn.Linear(in_features=d_model, out_features=vocab_size)
+        self.loss = nn.CrossEntropyLoss()
     
     def forward(self, x, patch_mask=None):
         return self.outLayer(self.model(x, patch_mask))
@@ -94,6 +97,21 @@ class MeIT(L.LightningModule):
                 'interval': 'step',  # Step-wise LR scheduling
             }
         }
+    
+    def training_step(self, train_batch, batch_idx):
+        x = train_batch[0]
+        mask = train_batch[1]
+        gt = train_batch[2]
+        logits = self.forward(x, patch_mask=mask)
+        logits = logits[:, 1:, :]
+        logits = logits[mask]
+        gt = gt[mask]
+        loss = self.loss(logits, gt)
+        self.log('loss', loss, on_epoch=True, batch_size=1, prog_bar=True)
+        return loss
+
+
+
 
 
 def get_DVAE_model(maxheight, maxwidth, in_channels=3):
