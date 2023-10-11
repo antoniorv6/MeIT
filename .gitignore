@@ -132,3 +132,5 @@ Data/
 wandb/
 vocab/
 weights/
+*.joblib
+*.ckpt

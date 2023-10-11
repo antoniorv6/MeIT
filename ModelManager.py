@@ -1,4 +1,4 @@
-from typing import Any
+import numpy as np
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torch
 import wandb
@@ -11,14 +11,16 @@ from torchvision.utils import make_grid
 from dalle_pytorch import DiscreteVAE
 
 from BeIT.ViT import ViTModel
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup, BeitConfig, BeitForMaskedImageModeling
+
+from DAN.Decoder import Decoder
 
 class DVAE(L.LightningModule):
-    def __init__(self, vocab_size=8192) -> None:
+    def __init__(self, num_layers=4, patch_size=16, vocab_size=8192) -> None:
         super().__init__()
         self.model = DiscreteVAE(
                     image_size = 1024,
-                    num_layers = 4,           # number of downsamples - ex. 256 / (2 ** 3) = (32 x 32 feature map)
+                    num_layers = num_layers,           # number of downsamples - ex. 256 / (2 ** 3) = (32 x 32 feature map)
                     num_tokens = vocab_size,        # number of visual tokens. in the paper, they used 8192, but could be smaller for downsized projects
                     codebook_dim = 512,       # codebook dimension
                     hidden_dim = 64,          # hidden dimension
@@ -27,6 +29,7 @@ class DVAE(L.LightningModule):
                     straight_through = False, # straight-through for gumbel softmax. unclear if it is better one way or the other
                     )
         self.temp = 0.9
+        self.patch_size = patch_size
         self.save_hyperparameters()
     
     def forward(self, x, return_loss=False, return_recons=False, temp=0.9):
@@ -44,7 +47,7 @@ class DVAE(L.LightningModule):
             loss, recons = self.forward(x, return_loss=True, return_recons=True)
             images = x
             codes = self.model.get_codebook_indices(x[:k])
-            hard_recons = self.model.decode(codes, x.size(2)//16, x.size(3)//16)
+            hard_recons = self.model.decode(codes, x.size(2)//self.patch_size, x.size(3)//self.patch_size)
 
             images, recons = map(lambda t: t[:k], (images, recons))
             images, recons, hard_recons, codes = map(lambda t: t.detach().cpu(), (images, recons, hard_recons, codes))
@@ -63,7 +66,7 @@ class DVAE(L.LightningModule):
         return loss
 
 class MeIT(L.LightningModule):
-    def __init__(self, max_image_size, vocab_size=8192, num_channels=3, d_model=768, attention_heads=12, dim_ff=3072, num_layers=12, patch_size=(16,16)) -> None:
+    def __init__(self, max_image_size, vocab_size=8192, num_channels=3, d_model=256, attention_heads=8, dim_ff=1024, num_layers=6, patch_size=(16,16)) -> None:
         super().__init__()
         self.model = ViTModel(max_img_size=max_image_size, 
                  num_channels=num_channels, 
@@ -74,6 +77,7 @@ class MeIT(L.LightningModule):
         
         self.outLayer = nn.Linear(in_features=d_model, out_features=vocab_size)
         self.loss = nn.CrossEntropyLoss()
+        self.save_hyperparameters()
     
     def forward(self, x, patch_mask=None):
         return self.outLayer(self.model(x, patch_mask))
@@ -84,12 +88,47 @@ class MeIT(L.LightningModule):
             betas=(0.9, 0.999),
             weight_decay=0.05)
         
+        return optimizer
+    
+    def training_step(self, train_batch, batch_idx):
+        x = train_batch[0]
+        mask = train_batch[1]
+        gt = train_batch[2]
+        logits = self.forward(x, patch_mask=mask)
+        logits = logits[:, 1:, :]
+        logits = logits[mask]
+        gt = gt[mask]
+        loss = self.loss(logits.unsqueeze(0).permute(0,2,1).contiguous(), gt.unsqueeze(0))
+        #loss = self.loss(logits.permute(0,2,1).contiguous(), gt)
+        self.log('loss', loss, on_epoch=True, batch_size=1, prog_bar=True)
+        return loss
+
+class MeITHuggingFace(L.LightningModule):
+    def __init__(self, max_image_size, vocab_size=8192, num_channels=3, d_model=768, attention_heads=12, dim_ff=3072, num_layers=12, patch_size=(16,16)) -> None:
+        super().__init__()
+        custom_config = BeitConfig(use_mask_token=True, image_size=max_image_size, patch_size=patch_size, vocab_size=vocab_size)
+        self.model = BeitForMaskedImageModeling(custom_config)
+        
+        self.outLayer = nn.Linear(in_features=d_model, out_features=vocab_size)
+        self.loss = nn.CrossEntropyLoss()
+        self.save_hyperparameters()
+    
+    def forward(self, x, patch_mask=None):
+        return self.model(x, bool_masked_pos=patch_mask)
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(),
+            lr=1e-3,
+            betas=(0.9, 0.999),
+            weight_decay=0.05)
+        
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=10000,
-            num_training_steps=250000
+            num_warmup_steps=40000,
+            num_training_steps=400000
         )
 
+        #return optimizer
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -102,27 +141,20 @@ class MeIT(L.LightningModule):
         x = train_batch[0]
         mask = train_batch[1]
         gt = train_batch[2]
-        logits = self.forward(x, patch_mask=mask)
-        logits = logits[:, 1:, :]
-        logits = logits[mask]
-        gt = gt[mask]
-        loss = self.loss(logits, gt)
-        self.log('loss', loss, on_epoch=True, batch_size=1, prog_bar=True)
+        output = self.model(x, bool_masked_pos=mask, labels=gt[mask])
+        loss = output.loss
+        self.log('loss', loss, on_epoch=True, batch_size=8, prog_bar=True)
         return loss
 
-
-
-
-
-def get_DVAE_model(maxheight, maxwidth, in_channels=3):
+def get_DVAE_model(maxheight, maxwidth, num_layers=4, patch_size=16, vocab_size=8192, in_channels=3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DVAE().to(device)
+    model = DVAE(num_layers=num_layers, patch_size=patch_size, vocab_size=vocab_size).to(device)
     summary(model, input_size=[(1,in_channels,maxheight,maxwidth)], dtypes=[torch.float])
     return model
 
-def get_MeIT_model(maxheight, maxwidth, in_channels=3):
+def get_MeIT_model(maxheight, maxwidth, in_channels=3, vocab_size=8192, patch_size=(16,16)):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MeIT(max_image_size=(maxheight, maxwidth)).to(device)
+    model = MeITHuggingFace(max_image_size=(maxheight, maxwidth), vocab_size=vocab_size, patch_size=patch_size).to(device)
     summary(model, input_size=[(1, in_channels,maxheight,maxwidth)], dtypes=[torch.float])
     return model
     
