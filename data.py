@@ -5,7 +5,7 @@ import numpy as np
 from rich.progress import track
 from torch.utils.data import Dataset
 from torchvision.transforms import ToTensor
-from BeIT.MaskGenerator import MaskingGenerator
+from MaskGenerator import MaskingGenerator
 from ModelManager import DVAE
 from transformers import BeitImageProcessor
 
@@ -77,11 +77,10 @@ class DeepScoresDataset(Dataset):
         return img.unsqueeze(0)
 
     def get_max_hw(self):
-        m_width = int(2772 * self.reduce_ratio)
-        m_height = int(1960 * self.reduce_ratio)
-
-
-        return m_height, m_width
+        width = closest_divisible_by_patch_size(int(np.ceil(2100 * self.reduce_ratio)), patch_size=self.patch_size)
+        height = closest_divisible_by_patch_size(int(np.ceil(2970 * self.reduce_ratio)), patch_size=self.patch_size)
+        
+        return height, width
 
 
 class DeepScoresMasking(Dataset):

@@ -1,3 +1,4 @@
+from typing import Any
 import numpy as np
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torch
@@ -10,10 +11,11 @@ from torchinfo import summary
 from torchvision.utils import make_grid
 from dalle_pytorch import DiscreteVAE
 
-from BeIT.ViT import ViTModel
+from own_impl.ViT import ViTModel
 from transformers import get_linear_schedule_with_warmup, BeitConfig, BeitForMaskedImageModeling
 
-from DAN.Decoder import Decoder
+from vit_pytorch.vit import ViT
+from vit_pytorch.mae import MAE
 
 class DVAE(L.LightningModule):
     def __init__(self, num_layers=4, patch_size=16, vocab_size=8192) -> None:
@@ -65,6 +67,8 @@ class DVAE(L.LightningModule):
         
         return loss
 
+### MY OWN IMPLEMENTATION OF THE BEIT
+
 class MeIT(L.LightningModule):
     def __init__(self, max_image_size, vocab_size=8192, num_channels=3, d_model=256, attention_heads=8, dim_ff=1024, num_layers=6, patch_size=(16,16)) -> None:
         super().__init__()
@@ -102,6 +106,10 @@ class MeIT(L.LightningModule):
         #loss = self.loss(logits.permute(0,2,1).contiguous(), gt)
         self.log('loss', loss, on_epoch=True, batch_size=1, prog_bar=True)
         return loss
+    
+####
+
+#### HUGGINGFACE TRANSFORMERS IMPLEMENTATION FOR SANITY CHECKING
 
 class MeITHuggingFace(L.LightningModule):
     def __init__(self, max_image_size, vocab_size=8192, num_channels=3, d_model=768, attention_heads=12, dim_ff=3072, num_layers=12, patch_size=(16,16)) -> None:
@@ -145,6 +153,71 @@ class MeITHuggingFace(L.LightningModule):
         loss = output.loss
         self.log('loss', loss, on_epoch=True, batch_size=8, prog_bar=True)
         return loss
+####
+
+class MeIT_MAE(L.LightningModule):
+    def __init__(self, image_size):
+        super().__init__()
+        self.model = ViT(
+            image_size = image_size,
+            patch_size = 32,
+            num_classes = 1000,
+            dim = 1024,
+            depth = 6,
+            heads = 8,
+            mlp_dim = 2048
+        )
+
+        self.mae = MAE(
+            encoder=self.model,
+            decoder_dim=512,
+            masking_ratio=0.75,
+            decoder_depth=6
+        )
+
+        self.save_hyperparameters()
+    
+    def forward(self, x):
+        patches = self.mae.to_patch(x)
+        num_patches, _ = self.model.pos_embedding.shape[-2:]
+        tokens = self.mae.patch_to_emb(patches)
+        if self.model.pool == "cls":
+            tokens += self.model.pos_embedding[:, 1:(num_patches + 1)]
+        elif self.model.pool == "mean":
+            tokens += self.model.pos_embedding.to(self.device, dtype=tokens.dtype) 
+        
+        return self.model.transformer(tokens)
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(),
+            lr=1.5e-3,
+            betas=(0.9, 0.999),
+            weight_decay=0.05)
+        
+        return optimizer
+        
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=40000,
+            num_training_steps=400000
+        )
+
+        #return optimizer
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step',  # Step-wise LR scheduling
+            }
+        }
+
+    def training_step(self, train_batch, batch_idx):
+        x = train_batch
+        loss = self.mae(x)
+        self.log('loss', loss, on_epoch=True, batch_size=1, prog_bar=True)
+        return loss
+
+## UTILITY FUNCS
 
 def get_DVAE_model(maxheight, maxwidth, num_layers=4, patch_size=16, vocab_size=8192, in_channels=3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -156,6 +229,12 @@ def get_MeIT_model(maxheight, maxwidth, in_channels=3, vocab_size=8192, patch_si
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MeITHuggingFace(max_image_size=(maxheight, maxwidth), vocab_size=vocab_size, patch_size=patch_size).to(device)
     summary(model, input_size=[(1, in_channels,maxheight,maxwidth)], dtypes=[torch.float])
+    return model
+
+def get_MAE_VIT_model(maxheight, maxwidth, in_channels=3):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = MeIT_MAE(image_size=(maxheight, maxwidth)).to(device)
+    summary(model, input_size=[(1, in_channels, maxheight, maxwidth)], dtypes=[torch.float])
     return model
     
 
