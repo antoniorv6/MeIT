@@ -11,22 +11,24 @@ from lightning.pytorch.loggers import WandbLogger
 torch.set_float32_matmul_precision('high')
 
 def main(model_name, patch_size):
-    dataset = DeepScoresDataset(patch_size=patch_size)
-    dataloader = DataLoader(dataset, batch_size=1, num_workers=20, collate_fn=ds2_collade_func)
-    
-    mheight, mwidth = dataset.get_max_hw()
+    train_dataset = DeepScoresDataset(patch_size=patch_size , samples_file="train.txt")
+    val_dataset = DeepScoresDataset(patch_size=patch_size , samples_file="test.txt")
 
-    print(mheight, mwidth)
+    train_loader = DataLoader(train_dataset, batch_size=1, num_workers=20, collate_fn=ds2_collade_func)
+    val_loader = DataLoader(val_dataset, batch_size=1, num_workers=20, collate_fn=ds2_collade_func)
     
-    model = get_MAE_VIT_model(mheight, mwidth)
+    mheight, mwidth = train_loader.get_max_hw()
+
+    model = get_MAE_VIT_model(mheight, mwidth, patch_size)
 
     wandb_logger = WandbLogger(project='LITIS_STAY', group=f"SSL", name=f"{model_name}", log_model=False)
     
-    checkpointer = ModelCheckpoint(dirpath=f"weights/", filename=f"{model_name}", every_n_train_steps=500, verbose=True)
+    bas_name = '{epoch}-{step}-{los_step:.2f}'
+    checkpointer = ModelCheckpoint(dirpath=f"weights/", filename=f"{model_name}-{bas_name}", every_n_train_steps=500, verbose=True)
 
-    trainer = Trainer(max_epochs=1, logger=wandb_logger, callbacks=[checkpointer])
+    trainer = Trainer(max_epochs=10, val_check_interval=500, check_val_every_n_epoch=None, logger=wandb_logger, callbacks=[checkpointer])
 
-    trainer.fit(model, train_dataloaders=dataloader)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 
 def launch(model_name, patch_size, checkpoint_path=None):

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 import numpy as np
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torch
@@ -16,6 +16,23 @@ from transformers import get_linear_schedule_with_warmup, BeitConfig, BeitForMas
 
 from vit_pytorch.vit import ViT
 from vit_pytorch.mae import MAE
+
+from einops.layers.torch import Rearrange
+
+def patches_to_image(tensor, original_height=None, original_width=None, p1=32, p2=32):
+    b, num_patches, _ = tensor.size()
+    c = 3  # Deduced from tensor shape
+
+    if original_height:
+        h = original_height
+        w = (num_patches * p2) // (h // p1)
+    elif original_width:
+        w = original_width
+        h = (num_patches * p1) // (w // p2)
+    else:
+        raise ValueError("Either original_height or original_width must be provided.")
+
+    return tensor.reshape(b, h//p1, w//p2, p1, p2, c).permute(0, 5, 1, 3, 2, 4).reshape(b, c, h, w)
 
 class DVAE(L.LightningModule):
     def __init__(self, num_layers=4, patch_size=16, vocab_size=8192) -> None:
@@ -155,26 +172,31 @@ class MeITHuggingFace(L.LightningModule):
         return loss
 ####
 
-class MeIT_MAE(L.LightningModule):
-    def __init__(self, image_size):
+class MiT_MAE(L.LightningModule):
+    def __init__(self, image_size, patch_size):
         super().__init__()
+        self.img_size = image_size
         self.model = ViT(
             image_size = image_size,
-            patch_size = 32,
+            patch_size = patch_size,
             num_classes = 1000,
-            dim = 1024,
-            depth = 6,
-            heads = 8,
-            mlp_dim = 2048
+            dim = 768,
+            depth = 12,
+            heads = 12,
+            mlp_dim = 3072
         )
 
         self.mae = MAE(
             encoder=self.model,
             decoder_dim=512,
-            masking_ratio=0.75,
+            masking_ratio=0.40,
             decoder_depth=6
         )
 
+        self.rand_index = np.random.randint(0, 200)
+        self.patch_size = patch_size
+        self.valrr = Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_size, p2 = patch_size)
+        self.val_losses = []
         self.save_hyperparameters()
     
     def forward(self, x):
@@ -196,26 +218,43 @@ class MeIT_MAE(L.LightningModule):
         
         return optimizer
         
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=40000,
-            num_training_steps=400000
-        )
-
-        #return optimizer
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'step',  # Step-wise LR scheduling
-            }
-        }
-
     def training_step(self, train_batch, batch_idx):
         x = train_batch
         loss = self.mae(x)
         self.log('loss', loss, on_epoch=True, batch_size=1, prog_bar=True)
         return loss
+
+    def validation_step(self, val_batch, batch_idx) -> STEP_OUTPUT | None:
+        x = val_batch
+        if batch_idx % self.rand_index  == 0:
+            image = x
+            loss, preds, mask = self.mae(x, return_predictions=True)
+            patched_image = self.valrr(image).squeeze()
+            mask = mask.squeeze()
+            preds = preds.squeeze()
+            unmasked_image = patched_image.clone()
+
+            for idx, prediction in enumerate(preds):
+                unmasked_image[mask[idx], :] = prediction
+            
+            prediction = patches_to_image(unmasked_image.unsqueeze(0), original_height=image.size(2), p1=self.patch_size, p2=self.patch_size)
+
+            self.logger.log_image('Original image', [wandb.Image(image)])
+            self.logger.log_image('Reconstruction', [wandb.Image(prediction)])
+
+            self.val_losses.append(loss)
+
+            return loss
+
+        loss = self.mae(x)
+        self.val_losses.append(loss)
+        return loss
+    
+    def on_validation_epoch_end(self) -> None:
+        self.logger.log_image('val_loss', np.mean(self.val_losses))
+        self.val_losses = []
+        
+        
 
 ## UTILITY FUNCS
 
@@ -231,13 +270,8 @@ def get_MeIT_model(maxheight, maxwidth, in_channels=3, vocab_size=8192, patch_si
     summary(model, input_size=[(1, in_channels,maxheight,maxwidth)], dtypes=[torch.float])
     return model
 
-def get_MAE_VIT_model(maxheight, maxwidth, in_channels=3):
+def get_MAE_VIT_model(maxheight, maxwidth, patch_size, in_channels=3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MeIT_MAE(image_size=(maxheight, maxwidth)).to(device)
+    model = MiT_MAE(image_size=(maxheight, maxwidth), patch_size=patch_size).to(device)
     summary(model, input_size=[(1, in_channels, maxheight, maxwidth)], dtypes=[torch.float])
     return model
-    
-
-    
-
-

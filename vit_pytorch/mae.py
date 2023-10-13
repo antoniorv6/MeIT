@@ -102,5 +102,5 @@ class MAE(nn.Module):
 
         recon_loss = F.mse_loss(pred_pixel_values, masked_patches)
         if return_predictions:
-            return recon_loss, pred_pixel_values
+            return recon_loss, pred_pixel_values, masked_indices
         return recon_loss

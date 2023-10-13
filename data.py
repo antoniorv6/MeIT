@@ -47,21 +47,21 @@ def closest_divisible_by_patch_size(n, patch_size=16):
         return higher
 
 class DeepScoresDataset(Dataset):
-    def __init__(self, data_path="Data/ds2_complete/images/", patch_size=16, reduce_ratio=0.4) -> None:
-        self.x = []
-        for imgname in track(os.listdir(data_path)):
-            self.x.append(os.path.join(data_path, imgname))
-        
+    def __init__(self, data_path="Data/ds2_complete/images/", samples_file=None, patch_size=16, reduce_ratio=0.4) -> None:
+        with open(samples_file) as f:
+            self.x = f.readlines() 
+        self.dpath = data_path
         self.reduce_ratio = reduce_ratio
         self.patch_size = patch_size
+        self.w = closest_divisible_by_patch_size(int(np.ceil(2100 * self.reduce_ratio)), patch_size=self.patch_size)
+        self.h = closest_divisible_by_patch_size(int(np.ceil(2970 * self.reduce_ratio)), patch_size=self.patch_size
         self.processor = BeitImageProcessor(do_resize=False, do_center_crop=False)
         super().__init__()
     
     def get_sample(self, index):
-        img = cv2.imread(self.x[index])
-        width = closest_divisible_by_patch_size(int(np.ceil(2100 * self.reduce_ratio)), patch_size=self.patch_size)
-        height = closest_divisible_by_patch_size(int(np.ceil(2970 * self.reduce_ratio)), patch_size=self.patch_size)
-        img = cv2.resize(img, (width, height))
+        sample = self.x[index].replace('\n', '')
+        img = cv2.imread(f"{self.dpath}{sample}")
+        img = cv2.resize(img, (self.w, self.h))
         img = self.processor(img, return_tensors="pt").pixel_values
         return img
 
@@ -69,18 +69,14 @@ class DeepScoresDataset(Dataset):
         return len(self.x)
 
     def __getitem__(self, index):
-        img = cv2.imread(self.x[index])
-        width = closest_divisible_by_patch_size(int(np.ceil(2100 * self.reduce_ratio)), patch_size=self.patch_size)
-        height = closest_divisible_by_patch_size(int(np.ceil(2970 * self.reduce_ratio)), patch_size=self.patch_size)
-        img = cv2.resize(img, (width, height))
+        sample = self.x[index].replace('\n', '')
+        img = cv2.imread(f"{self.dpath}{sample}")
+        img = cv2.resize(img, (self.w, self.h))
         img = self.processor(img, return_tensors="pt").pixel_values
         return img.unsqueeze(0)
 
     def get_max_hw(self):
-        width = closest_divisible_by_patch_size(int(np.ceil(2100 * self.reduce_ratio)), patch_size=self.patch_size)
-        height = closest_divisible_by_patch_size(int(np.ceil(2970 * self.reduce_ratio)), patch_size=self.patch_size)
-        
-        return height, width
+        return self.h, self.w
 
 
 class DeepScoresMasking(Dataset):
