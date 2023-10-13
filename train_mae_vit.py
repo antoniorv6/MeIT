@@ -23,7 +23,7 @@ def main(model_name, patch_size):
 
     wandb_logger = WandbLogger(project='LITIS_STAY', group=f"SSL", name=f"{model_name}", log_model=False)
     
-    bas_name = '{epoch}-{step}-{los_step:.2f}'
+    bas_name = '{epoch}-{step}-{val_loss:.2f}'
     checkpointer = ModelCheckpoint(dirpath=f"weights/", filename=f"{model_name}-{bas_name}", every_n_train_steps=500, verbose=True)
 
     trainer = Trainer(max_epochs=10, val_check_interval=500, check_val_every_n_epoch=None, logger=wandb_logger, callbacks=[checkpointer])
