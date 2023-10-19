@@ -17,10 +17,10 @@ x_train = []
 y_test = []
 x_test = []
 
-with open("Data/grandstaff_dataset/partitions_fpgrandstaff/excerpts/fold_0/train.txt") as trainfile:
+with open("Data/string_quartets_dataset/partitions_strquartets/excerpts/fold_0/train.txt") as trainfile:
     lines = trainfile.readlines()
     for line in track(lines):
-        imgpath = os.path.join("Data/grandstaff_dataset/", ".".join(line.split('.')[:-1])+".png")
+        imgpath = os.path.join("Data/string_quartets_dataset/", ".".join(line.split('.')[:-1])+".png")
         img = cv2.imread(imgpath)
         y_train.append(imgpath.split("/")[3])
         width = closest_divisible_by_patch_size(int(np.ceil(2100 * 0.4)), patch_size=16)
@@ -33,10 +33,10 @@ labelencoder = LabelEncoder().fit(y_train)
 y = labelencoder.transform(y_train)
 kneighbors = KNeighborsClassifier(n_neighbors=1).fit(x_train, y)
 
-with open("Data/grandstaff_dataset/partitions_fpgrandstaff/excerpts/fold_0/val.txt") as trainfile:
+with open("Data/string_quartets_dataset/partitions_strquartets/excerpts/fold_0/val.txt") as trainfile:
     lines = trainfile.readlines()
     for line in track(lines):
-        imgpath = os.path.join("Data/grandstaff_dataset/", ".".join(line.split('.')[:-1])+".png")
+        imgpath = os.path.join("Data/string_quartets_dataset/", ".".join(line.split('.')[:-1])+".png")
         img = cv2.imread(imgpath)
         y_test.append(imgpath.split("/")[3])
         width = closest_divisible_by_patch_size(int(np.ceil(2100 * 0.4)), patch_size=16)

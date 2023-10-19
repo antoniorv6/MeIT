@@ -54,7 +54,7 @@ class DeepScoresDataset(Dataset):
         self.reduce_ratio = reduce_ratio
         self.patch_size = patch_size
         self.w = closest_divisible_by_patch_size(int(np.ceil(2100 * self.reduce_ratio)), patch_size=self.patch_size)
-        self.h = closest_divisible_by_patch_size(int(np.ceil(2970 * self.reduce_ratio)), patch_size=self.patch_size
+        self.h = closest_divisible_by_patch_size(int(np.ceil(2970 * self.reduce_ratio)), patch_size=self.patch_size)
         self.processor = BeitImageProcessor(do_resize=False, do_center_crop=False)
         super().__init__()
     

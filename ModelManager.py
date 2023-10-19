@@ -17,7 +17,11 @@ from transformers import get_linear_schedule_with_warmup, BeitConfig, BeitForMas
 from vit_pytorch.vit import ViT
 from vit_pytorch.mae import MAE
 
+from DAN.DanDecoder import Decoder
+
 from einops.layers.torch import Rearrange
+
+from metrics_computing import compute_poliphony_metrics
 
 def patches_to_image(tensor, original_height=None, original_width=None, p1=32, p2=32):
     b, num_patches, _ = tensor.size()
@@ -242,19 +246,147 @@ class MiT_MAE(L.LightningModule):
             self.logger.log_image('Original image', [wandb.Image(image)])
             self.logger.log_image('Reconstruction', [wandb.Image(prediction)])
 
-            self.val_losses.append(loss)
+            self.val_losses.append(loss.item())
 
             return loss
 
         loss = self.mae(x)
-        self.val_losses.append(loss)
+        self.val_losses.append(loss.item())
         return loss
     
     def on_validation_epoch_end(self) -> None:
-        self.logger.log_image('val_loss', np.mean(self.val_losses))
+        self.log('val_loss', np.mean(self.val_losses))
         self.val_losses = []
+
+
+####### DAN
+class DAN(L.LightningModule):
+    def __init__(self, encoder_path, maxlen, out_categories, padding_token, w2i, i2w, out_dir, d_model=None, dim_ff=None) -> None:
+        super().__init__()
+        self.encoder = MiT_MAE.load_from_checkpoint(encoder_path)
+        self.decoder = Decoder(d_model, dim_ff, maxlen, out_categories)
+
+        self.padding_token = padding_token
+
+        self.loss = nn.CrossEntropyLoss(ignore_index=self.padding_token)
+
+        self.valpredictions = []
+        self.valgts = []
+
+        self.w2i = w2i
+        self.i2w = i2w
+        self.maxlen = maxlen
+        self.out_dir=out_dir
+
+        self.save_hyperparameters()
+
+    def forward(self, x, y_pred):
+        encoder_output = self.encoder(x)
+        return self.forward_decoder(encoder_output, y_pred, cache=None)
+
+    def forward_encoder(self, x):
+        return self.encoder(x)
+    
+    def forward_decoder(self, encoder_output, last_preds, cache=None):
+        b, _, _ = encoder_output.size()
+        reduced_size = [s.shape[1] for s in encoder_output]
+        ylens = [len(sample) for sample in last_preds]
+        cache = cache
+
+        features = encoder_output.permute(1, 0, 2).contiguous()
+        enhanced_features = encoder_output.permute(1, 0, 2).contiguous()
+        output, predictions, _, _, weights = self.decoder(features, enhanced_features, last_preds[:, :], reduced_size, 
+                                                          [max(ylens) for _ in range(b)], encoder_output.size(), 
+                                                          start=0, cache=cache, keep_all_weights=True)
+    
+        return output, predictions, cache, weights
+    
+    def configure_optimizers(self):
+        return torch.optim.Adam(list(self.encoder.parameters()) + list(self.decoder.parameters()), lr=0.00001, amsgrad=False)
+
+    def training_step(self, train_batch):
+        x, di, y = train_batch
+        output, predictions, cache, weights = self.forward(x, di)
+        loss = self.loss(predictions, y)
+        self.log("loss", loss, on_epoch=True, batch_size=1, prog_bar=True)
+        return loss
+
+    def validation_step(self, val_batch, batch_idx):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        x, _, y = val_batch
+        encoder_output = self.forward_encoder(x)
+        predicted_sequence = torch.from_numpy(np.asarray([self.w2i['<bos>']])).to(device).unsqueeze(0)
+        cache = None
+        for i in range(self.maxlen):
+            output, predictions, cache, weights = self.forward_decoder(encoder_output, predicted_sequence.long(), cache=cache)
+            predicted_token = torch.argmax(predictions[:, :, -1]).item()
+            predicted_sequence = torch.cat([predicted_sequence, torch.argmax(predictions[:, :, -1], dim=1, keepdim=True)], dim=1)
+            if predicted_token == self.w2i['<eos>']:
+                break
         
+        dec = "".join([self.i2w[token.item()] for token in predicted_sequence.squeeze(0)[1:]])
+        dec = dec.replace("<t>", "\t")
+        dec = dec.replace("<b>", "\n")
+        dec = dec.replace("<s>", " ")
+
+        gt = "".join([self.i2w[token.item()] for token in y.squeeze(0)[:-1]])
+        gt = gt.replace("<t>", "\t")
+        gt = gt.replace("<b>", "\n")
+        gt = gt.replace("<s>", " ")
+
+        self.valpredictions.append(dec)
+        self.valgts.append(gt)
+    
+    def test_step(self, test_batch, batch_idx):
+        self.validation_step(test_batch, batch_idx)
+    
+    def get_dictionaries(self):
+        return self.w2i, self.i2w
+
+class Poliphony_DAN(DAN):
+    def __init__(self, encoder_path, maxlen, out_categories, padding_token, w2i, i2w, out_dir) -> None:
+        super().__init__(encoder_path, maxlen, out_categories, padding_token, w2i, i2w, out_dir, d_model=768, dim_ff=768)
+    
+    def on_validation_epoch_end(self):
+        cer, ser, ler = compute_poliphony_metrics(self.valpredictions, self.valgts)
         
+        random_index = np.random.randint(0, len(self.valpredictions))
+        predtoshow = self.valpredictions[random_index]
+        gttoshow = self.valgts[random_index]
+        print(f"[Prediction] - {predtoshow}")
+        print(f"[GT] - {gttoshow}")
+
+        self.log('val_CER', cer, prog_bar=True)
+        self.log('val_SER', ser, prog_bar=True)
+        self.log('val_LER', ler, prog_bar=True)
+
+        self.valpredictions = []
+        self.valgts = []
+
+        return ser
+
+    def on_test_epoch_end(self):
+        cer, ser, ler = compute_poliphony_metrics(self.valpredictions, self.valgts)
+
+        for index, sample in enumerate(self.valpredictions):
+            with open(f"{self.out_dir}/hyp/{index}.krn", "w+") as krnfile:
+                krnfile.write(sample)
+        
+        for index, sample in enumerate(self.valgts):
+            with open(f"{self.out_dir}/gt/{index}.krn", "w+") as krnfile:
+                krnfile.write(sample)
+
+        self.log('test_CER', cer)
+        self.log('test_SER', ser)
+        self.log('test_LER', ler)
+
+        self.valpredictions = []
+        self.valgts = []
+
+        return ser
+
+
+#######
 
 ## UTILITY FUNCS
 
@@ -275,3 +407,15 @@ def get_MAE_VIT_model(maxheight, maxwidth, patch_size, in_channels=3):
     model = MiT_MAE(image_size=(maxheight, maxwidth), patch_size=patch_size).to(device)
     summary(model, input_size=[(1, in_channels, maxheight, maxwidth)], dtypes=[torch.float])
     return model
+
+def get_DAN_MeIT(maxheight, maxwidth, maxlength, encoder_checkpoint, out_categories, padding_token, w2i, i2w):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = Poliphony_DAN(encoder_path=encoder_checkpoint, maxlen=maxlength, out_categories=out_categories, 
+                          padding_token=padding_token, w2i=w2i, i2w=i2w, out_dir="out").to(device)
+    summary(model, input_size=[(1,3,maxheight,maxwidth), (1,maxlength)], dtypes=[torch.float, torch.long])
+    return model
+
+#if __name__ == "__main__":
+    #get_DAN_MeIT(1280, 1280, 1000, "weights/MiT_MAE_B-epoch=1-step=480000-val_loss=0.10487.ckpt", 7000, 0, {}, {})
+
+    
