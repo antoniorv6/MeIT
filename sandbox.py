@@ -10,6 +10,7 @@ from einops import rearrange
 
 from vit_pytorch.vit import ViT
 from vit_pytorch.mae import MAE
+from vit_pytorch.mpp import MPP
 
 def patches_to_image(tensor, original_height=None, original_width=None, p1=32, p2=32):
     b, num_patches, _ = tensor.size()
@@ -26,7 +27,7 @@ def patches_to_image(tensor, original_height=None, original_width=None, p1=32, p
 
     return tensor.reshape(b, h//p1, w//p2, p1, p2, c).permute(0, 5, 1, 3, 2, 4).reshape(b, c, h, w)
 
-dataset = DeepScoresDataset(patch_size=32)
+dataset = DeepScoresDataset(patch_size=32, samples_file="train.txt")
 dataloader = DataLoader(dataset, batch_size=1, collate_fn=ds2_collade_func)
 max_height, max_width = dataset.get_max_hw()
 mean = dataset.processor.image_mean
@@ -44,17 +45,23 @@ model = ViT(
     mlp_dim = 2048
 )
 
-mae = MAE(
-    encoder=model,
-    decoder_dim=512,
-    masking_ratio=0.4,
-    decoder_depth=6
+mpp = MPP(
+    transformer=model,
+    patch_size=32,
+    dim=1024,
+    mask_prob=0.15,
+    random_patch_prob=0.3,
+    replace_prob=0.5
 )
 
 rearr = Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = 32, p2 = 32)
 sample = next(iter(dataloader))
 #original_img = sample.clone()
-loss, preds, mask = mae(sample, return_predictions=True)
+loss, preds, mask = mpp(sample, return_outputs=True)
+print(loss)
+print(preds.size())
+import sys
+sys.exit()
 
 patched_image = rearr(sample).squeeze()
 mask = mask.squeeze()

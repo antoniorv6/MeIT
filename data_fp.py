@@ -21,7 +21,7 @@ def closest_divisible_by_patch_size(n, patch_size=16):
     else:
         return higher
 
-def load_set(path, base_folder="string_quartets_dataset", fileformat="png", krn_type="bekrn", reduce_ratio=0.4):
+def load_set(path, base_folder="grandstaff_dataset", fileformat="png", krn_type="bekrn", reduce_ratio=0.4):
     x = []
     y = []
     with open(path) as datafile:
@@ -190,7 +190,7 @@ def load_data(data_path, vocab_name, val_path=None):
     if val_path == None:
         val_path = data_path
     train_dataset = GrandStaffDataset(data_path=f"{data_path}/train.txt", augment=True)
-    val_dataset = GrandStaffDataset(data_path=f"{val_path}/val.txt", size=1000)
+    val_dataset = GrandStaffDataset(data_path=f"{val_path}/val.txt")
     test_dataset = GrandStaffDataset(data_path=f"{data_path}/test.txt")
 
     w2i, i2w = check_and_retrieveVocabulary([train_dataset.get_gt(), val_dataset.get_gt(), test_dataset.get_gt()], "vocab/", f"{vocab_name}")

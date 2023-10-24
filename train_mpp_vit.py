@@ -3,7 +3,7 @@ import fire
 import torch
 from data import DeepScoresDataset, ds2_collade_func
 from torch.utils.data import DataLoader
-from ModelManager import get_MAE_VIT_model
+from ModelManager import get_MPP_VIT_model
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
@@ -19,14 +19,14 @@ def main(model_name, patch_size):
     
     mheight, mwidth = train_dataset.get_max_hw()
 
-    model = get_MAE_VIT_model(mheight, mwidth, patch_size)
+    model = get_MPP_VIT_model(mheight, mwidth, patch_size)
 
     wandb_logger = WandbLogger(project='LITIS_STAY', group=f"SSL", name=f"{model_name}", log_model=False)
     
     bas_name = '{epoch}-{step}-{val_loss:.5f}'
-    checkpointer = ModelCheckpoint(dirpath=f"weights/", filename=f"{model_name}-{bas_name}", every_n_train_steps=50000, save_top_k=-1, verbose=True)
+    checkpointer = ModelCheckpoint(dirpath=f"weights/MiT_MPP/", filename=f"{model_name}-{bas_name}", every_n_train_steps=40000, save_top_k=-1, verbose=True)
 
-    trainer = Trainer(max_epochs=15, val_check_interval=50000, check_val_every_n_epoch=None, logger=wandb_logger, callbacks=[checkpointer])
+    trainer = Trainer(max_epochs=10, val_check_interval=40000, check_val_every_n_epoch=None, logger=wandb_logger, callbacks=[checkpointer])
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 

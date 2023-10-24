@@ -15,7 +15,10 @@ from own_impl.ViT import ViTModel
 from transformers import get_linear_schedule_with_warmup, BeitConfig, BeitForMaskedImageModeling
 
 from vit_pytorch.vit import ViT
+from vit_pytorch.simple_vit import SimpleViT
 from vit_pytorch.mae import MAE
+from vit_pytorch.mpp import MPP
+from einops import rearrange
 
 from DAN.DanDecoder import Decoder
 
@@ -175,12 +178,11 @@ class MeITHuggingFace(L.LightningModule):
         self.log('loss', loss, on_epoch=True, batch_size=8, prog_bar=True)
         return loss
 ####
-
 class MiT_MAE(L.LightningModule):
     def __init__(self, image_size, patch_size):
         super().__init__()
         self.img_size = image_size
-        self.model = ViT(
+        self.model = SimpleViT(
             image_size = image_size,
             patch_size = patch_size,
             num_classes = 1000,
@@ -215,10 +217,13 @@ class MiT_MAE(L.LightningModule):
         return self.model.transformer(tokens)
     
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(),
-            lr=1.5e-3,
-            betas=(0.9, 0.999),
-            weight_decay=0.05)
+        #optimizer = torch.optim.AdamW(self.parameters(),
+        #    lr=1.5e-3,
+        #    betas=(0.9, 0.999),
+        #    weight_decay=0.05)
+        optimizer = torch.optim.Adam(self.parameters(),
+                                     lr=3e-4,
+                                     betas=(0.9,0.999))
         
         return optimizer
         
@@ -251,6 +256,70 @@ class MiT_MAE(L.LightningModule):
             return loss
 
         loss = self.mae(x)
+        self.val_losses.append(loss.item())
+        return loss
+    
+    def on_validation_epoch_end(self) -> None:
+        self.log('val_loss', np.mean(self.val_losses))
+        self.val_losses = []
+
+
+
+class MiT_MPP(L.LightningModule):
+    def __init__(self, image_size, patch_size):
+        super().__init__()
+        self.img_size = image_size
+        self.model = ViT(
+            image_size = image_size,
+            patch_size = patch_size,
+            num_classes = 1000,
+            dim = 768,
+            depth = 12,
+            heads = 12,
+            mlp_dim = 3072
+        )
+
+        self.mpp = MPP(
+            transformer=self.model,
+            patch_size=32,
+            dim=768,
+            mask_prob=0.15,
+            random_patch_prob=0.3,
+            replace_prob=0.5
+        )
+
+        self.rand_index = np.random.randint(0, 200)
+        self.patch_size = patch_size
+        self.val_losses = []
+        self.save_hyperparameters()
+    
+    def forward(self, x):
+        patches = rearrange(x,
+                          'b c (h p1) (w p2) -> b (h w) (p1 p2 c)',
+                          p1=self.patch_size,
+                          p2=self.patch_size)
+        #num_patches, _ = self.model.pos_embedding.shape[-2:]
+        tokens = self.mpp.patch_to_emb(patches)
+        
+        return self.model.transformer(tokens)[:, 1:, :]
+    
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(),
+            lr=1.5e-3,
+            betas=(0.9, 0.999),
+            weight_decay=0.05)
+        
+        return optimizer
+        
+    def training_step(self, train_batch, batch_idx):
+        x = train_batch
+        loss = self.mpp(x)
+        self.log('loss', loss, on_epoch=True, batch_size=1, prog_bar=True)
+        return loss
+
+    def validation_step(self, val_batch, batch_idx) -> STEP_OUTPUT | None:
+        x = val_batch
+        loss = self.mpp(x)
         self.val_losses.append(loss.item())
         return loss
     
@@ -302,7 +371,7 @@ class DAN(L.LightningModule):
         return output, predictions, cache, weights
     
     def configure_optimizers(self):
-        return torch.optim.Adam(list(self.encoder.parameters()) + list(self.decoder.parameters()), lr=0.00001, amsgrad=False)
+        return torch.optim.Adam(list(self.encoder.parameters()) + list(self.decoder.parameters()), lr=0.0001, amsgrad=False)
 
     def training_step(self, train_batch):
         x, di, y = train_batch
@@ -405,6 +474,12 @@ def get_MeIT_model(maxheight, maxwidth, in_channels=3, vocab_size=8192, patch_si
 def get_MAE_VIT_model(maxheight, maxwidth, patch_size, in_channels=3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MiT_MAE(image_size=(maxheight, maxwidth), patch_size=patch_size).to(device)
+    summary(model, input_size=[(1, in_channels, maxheight, maxwidth)], dtypes=[torch.float])
+    return model
+
+def get_MPP_VIT_model(maxheight, maxwidth, patch_size, in_channels=3):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = MiT_MPP(image_size=(maxheight, maxwidth), patch_size=patch_size).to(device)
     summary(model, input_size=[(1, in_channels, maxheight, maxwidth)], dtypes=[torch.float])
     return model
 

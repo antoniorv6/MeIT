@@ -113,7 +113,7 @@ class MPP(nn.Module):
         # token ids
         self.mask_token = nn.Parameter(torch.randn(1, 1, channels * patch_size ** 2))
 
-    def forward(self, input, **kwargs):
+    def forward(self, input, return_outputs=False, **kwargs):
         transformer = self.transformer
         # clone original image for loss
         img = input.clone().detach()
@@ -171,5 +171,6 @@ class MPP(nn.Module):
         logits = cls_logits[:, 1:, :]
 
         mpp_loss = self.loss(logits, img, mask)
+
 
         return mpp_loss
